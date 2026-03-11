@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { 
   Search, 
   AlertTriangle, 
@@ -14,117 +14,127 @@ import {
   Zap, 
   Type, 
   MessageSquareWarning,
-  RefreshCw
+  RefreshCw,
+  BrainCircuit,
+  ShieldAlert
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI, Type as SchemaType } from "@google/genai";
 
 // --- Constants & Types ---
 
 type RiskLevel = 'Low' | 'Medium' | 'High';
 
+type IconKey = 'Search' | 'AlertTriangle' | 'CheckCircle2' | 'AlertCircle' | 'Info' | 'BarChart3' | 'Zap' | 'Type' | 'MessageSquareWarning' | 'ShieldAlert';
+
+interface Finding {
+  title: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high';
+  iconKey: IconKey;
+}
+
 interface AnalysisResult {
   score: number; // 0 to 100
   riskLevel: RiskLevel;
-  findings: {
-    title: string;
-    description: string;
-    severity: 'low' | 'medium' | 'high';
-    icon: React.ReactNode;
-  }[];
+  findings: Finding[];
+  aiReasoning?: string;
 }
 
-const CLICKBAIT_WORDS = [
-  'SHOCKING', 'UNBELIEVABLE', 'MUST SEE', 'YOU WON\'T BELIEVE', 'AMAZING', 
-  'SECRET', 'HIDDEN', 'TRUTH', 'FINALLY REVEALED', 'URGENT', 'BREAKING',
-  'SCANDAL', 'MIRACLE', 'CURE', 'INSTANT', 'GUARANTEED', 'WARNING'
-];
+const ICON_MAP: Record<IconKey, React.ReactNode> = {
+  Search: <Search className="w-4 h-4" />,
+  AlertTriangle: <AlertTriangle className="w-4 h-4" />,
+  CheckCircle2: <CheckCircle2 className="w-4 h-4" />,
+  AlertCircle: <AlertCircle className="w-4 h-4" />,
+  Info: <Info className="w-4 h-4" />,
+  BarChart3: <BarChart3 className="w-4 h-4" />,
+  Zap: <Zap className="w-4 h-4" />,
+  Type: <Type className="w-4 h-4" />,
+  MessageSquareWarning: <MessageSquareWarning className="w-4 h-4" />,
+  ShieldAlert: <ShieldAlert className="w-4 h-4" />,
+};
 
-const EMOTIONAL_WORDS = [
-  'OUTRAGE', 'HORRIBLE', 'TERRIBLE', 'DISASTER', 'CHAOS', 'FEAR', 'PANIC',
-  'HATE', 'ANGRY', 'FURIOUS', 'DEVASTATING', 'HEARTBREAKING', 'TRAGEDY'
-];
+// --- AI Analysis Logic ---
 
-// --- Helper Functions ---
-
-const analyzeHeadline = (headline: string): AnalysisResult => {
+const analyzeHeadlineWithAI = async (headline: string): Promise<AnalysisResult> => {
   if (!headline.trim()) {
     return { score: 0, riskLevel: 'Low', findings: [] };
   }
 
-  const findings: AnalysisResult['findings'] = [];
-  let score = 0;
-
-  // 1. Suspicious Capitalization
-  const words = headline.split(/\s+/);
-  const allCapsWords = words.filter(w => w.length > 3 && w === w.toUpperCase() && !/^[0-9]+$/.test(w));
-  if (allCapsWords.length > 0) {
-    const severity = allCapsWords.length > 2 ? 'high' : 'medium';
-    score += severity === 'high' ? 25 : 15;
-    findings.push({
-      title: 'Suspicious Capitalization',
-      description: `Found ${allCapsWords.length} word(s) in ALL CAPS. This is often used to grab attention aggressively.`,
-      severity,
-      icon: <Type className="w-4 h-4" />
-    });
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("API Key not found. Please configure GEMINI_API_KEY.");
   }
 
-  // 2. Excessive Punctuation
-  const excessivePunctuation = (headline.match(/[!?]{2,}/g) || []).length;
-  if (excessivePunctuation > 0) {
-    score += 20;
-    findings.push({
-      title: 'Excessive Punctuation',
-      description: 'Multiple exclamation or question marks detected. This is a common trait of sensationalist content.',
-      severity: 'medium',
-      icon: <AlertCircle className="w-4 h-4" />
-    });
-  }
-
-  // 3. Clickbait & Emotional Words
-  const upperHeadline = headline.toUpperCase();
-  const foundClickbait = CLICKBAIT_WORDS.filter(word => upperHeadline.includes(word));
-  const foundEmotional = EMOTIONAL_WORDS.filter(word => upperHeadline.includes(word));
-
-  if (foundClickbait.length > 0) {
-    score += Math.min(foundClickbait.length * 10, 30);
-    findings.push({
-      title: 'Clickbait Language',
-      description: `Detected phrases like: ${foundClickbait.slice(0, 3).join(', ')}. These are designed to manipulate curiosity.`,
-      severity: foundClickbait.length > 2 ? 'high' : 'medium',
-      icon: <Zap className="w-4 h-4" />
-    });
-  }
-
-  if (foundEmotional.length > 0) {
-    score += Math.min(foundEmotional.length * 8, 25);
-    findings.push({
-      title: 'Emotional Manipulation',
-      description: 'Headline uses highly charged emotional language to provoke a reaction rather than inform.',
-      severity: 'medium',
-      icon: <MessageSquareWarning className="w-4 h-4" />
-    });
-  }
-
-  // 4. Exaggerated Claims (Superlatives)
-  const superlatives = (headline.match(/\b(best|worst|greatest|fastest|cheapest|easiest|only|never|always)\b/gi) || []).length;
-  if (superlatives > 2) {
-    score += 15;
-    findings.push({
-      title: 'Exaggerated Claims',
-      description: 'Frequent use of superlatives suggests a lack of balanced reporting.',
-      severity: 'low',
-      icon: <BarChart3 className="w-4 h-4" />
-    });
-  }
-
-  // Normalize score
-  score = Math.min(score, 100);
+  const genAI = new GoogleGenAI({ apiKey });
   
-  let riskLevel: RiskLevel = 'Low';
-  if (score > 60) riskLevel = 'High';
-  else if (score > 30) riskLevel = 'Medium';
+  const systemInstruction = `You are an expert misinformation analyst and media literacy specialist. 
+Analyze news headlines for linguistic markers, logical fallacies, sensationalism, and potential for misinformation.
+Be critical but fair. Even if a headline is factually true, if it is framed in a highly misleading or sensationalist way, it should receive a higher risk score.
+If a headline makes an extraordinary claim without context, it is high risk.
+Return the analysis in a structured JSON format.`;
 
-  return { score, riskLevel, findings };
+  try {
+    const response = await genAI.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Analyze this headline: "${headline}"`,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: SchemaType.OBJECT,
+          properties: {
+            score: {
+              type: SchemaType.NUMBER,
+              description: "A score from 0 to 100 representing the probability of being fake, misleading, or sensationalized. 100 is most likely fake/misleading.",
+            },
+            riskLevel: {
+              type: SchemaType.STRING,
+              description: "One of: Low, Medium, High",
+            },
+            findings: {
+              type: SchemaType.ARRAY,
+              items: {
+                type: SchemaType.OBJECT,
+                properties: {
+                  title: { type: SchemaType.STRING },
+                  description: { type: SchemaType.STRING },
+                  severity: { type: SchemaType.STRING, description: "low, medium, or high" },
+                  iconKey: { 
+                    type: SchemaType.STRING, 
+                    description: "One of: AlertTriangle, AlertCircle, BarChart3, Zap, Type, MessageSquareWarning, ShieldAlert" 
+                  },
+                },
+                required: ["title", "description", "severity", "iconKey"],
+              },
+            },
+            aiReasoning: {
+              type: SchemaType.STRING,
+              description: "A brief 1-2 sentence summary of why this score was given.",
+            },
+          },
+          required: ["score", "riskLevel", "findings", "aiReasoning"],
+        },
+      },
+    });
+
+    const result = JSON.parse(response.text);
+    return result as AnalysisResult;
+  } catch (error) {
+    console.error("AI Analysis failed:", error);
+    // Fallback to a generic error result if the API fails
+    return {
+      score: 50,
+      riskLevel: 'Medium',
+      findings: [{
+        title: "Analysis Interrupted",
+        description: "We couldn't reach the AI analyst. This score is a placeholder.",
+        severity: 'medium',
+        iconKey: 'AlertCircle'
+      }],
+      aiReasoning: "The automated analysis encountered an error. Please try again."
+    };
+  }
 };
 
 // --- Components ---
@@ -154,24 +164,30 @@ export default function App() {
   const [headline, setHeadline] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!headline.trim()) return;
     
     setIsAnalyzing(true);
     setResult(null);
+    setError(null);
 
-    // Simulate analysis delay
-    setTimeout(() => {
-      const analysis = analyzeHeadline(headline);
+    try {
+      const analysis = await analyzeHeadlineWithAI(headline);
       setResult(analysis);
+    } catch (err) {
+      setError("Failed to analyze headline. Please check your connection.");
+      console.error(err);
+    } finally {
       setIsAnalyzing(false);
-    }, 800);
+    }
   };
 
   const handleReset = () => {
     setHeadline('');
     setResult(null);
+    setError(null);
   };
 
   return (
@@ -184,7 +200,7 @@ export default function App() {
             animate={{ opacity: 1, y: 0 }}
             className="inline-flex items-center justify-center w-16 h-16 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-200 mb-6"
           >
-            <Search className="w-8 h-8 text-white" />
+            <BrainCircuit className="w-8 h-8 text-white" />
           </motion.div>
           <motion.h1 
             initial={{ opacity: 0 }}
@@ -200,7 +216,7 @@ export default function App() {
             transition={{ delay: 0.3 }}
             className="text-slate-500 text-lg max-w-xl mx-auto"
           >
-            Enter a news headline to analyze its linguistic patterns and estimate the likelihood of it being misleading or sensationalized.
+            Powered by Gemini AI to analyze linguistic patterns, logical fallacies, and sensationalism in news headlines.
           </motion.p>
         </header>
 
@@ -219,6 +235,13 @@ export default function App() {
             </div>
           </div>
 
+          {error && (
+            <div className="mt-4 p-3 bg-rose-50 text-rose-600 rounded-xl text-sm flex items-center gap-2">
+              <AlertCircle className="w-4 h-4" />
+              {error}
+            </div>
+          )}
+
           <div className="mt-6 flex flex-col sm:flex-row gap-3">
             <button
               id="analyze-btn"
@@ -229,12 +252,12 @@ export default function App() {
               {isAnalyzing ? (
                 <>
                   <RefreshCw className="w-5 h-5 animate-spin" />
-                  Analyzing Patterns...
+                  AI is Analyzing...
                 </>
               ) : (
                 <>
                   <Zap className="w-5 h-5" />
-                  Analyze Headline
+                  Analyze with AI
                 </>
               )}
             </button>
@@ -292,22 +315,25 @@ export default function App() {
                       />
                     </svg>
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span className="text-4xl font-bold">{result.score}%</span>
+                      <span className="text-4xl font-bold">{Math.round(result.score)}%</span>
                       <span className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Probability</span>
                     </div>
                   </div>
 
                   <div className="flex-1 text-center md:text-left">
                     <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4">
-                      <h2 className="text-2xl font-bold">Analysis Summary</h2>
+                      <h2 className="text-2xl font-bold">AI Analysis Summary</h2>
                       <div className="flex justify-center md:justify-start">
                         <RiskBadge level={result.riskLevel} />
                       </div>
                     </div>
-                    <p className="text-slate-600 leading-relaxed">
-                      {result.riskLevel === 'Low' && "This headline appears to follow standard journalistic practices. It lacks common sensationalist markers."}
-                      {result.riskLevel === 'Medium' && "Caution advised. This headline contains several elements often found in clickbait or biased reporting."}
-                      {result.riskLevel === 'High' && "High probability of misinformation. This headline uses multiple aggressive techniques to manipulate reader perception."}
+                    <p className="text-slate-600 leading-relaxed italic mb-4">
+                      "{result.aiReasoning}"
+                    </p>
+                    <p className="text-slate-500 text-sm">
+                      {result.riskLevel === 'Low' && "The AI found few markers of misinformation. This headline appears relatively balanced."}
+                      {result.riskLevel === 'Medium' && "The AI detected some concerning patterns. Use caution and cross-reference this information."}
+                      {result.riskLevel === 'High' && "The AI flagged significant issues with this headline's framing or content. High likelihood of being misleading."}
                     </p>
                   </div>
                 </div>
@@ -326,9 +352,9 @@ export default function App() {
                     >
                       <div className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center ${
                         finding.severity === 'high' ? 'bg-rose-50 text-rose-500' :
-                        finding.severity === 'medium' ? 'bg-amber-50 text-amber-500' : 'bg-blue-50 text-blue-500'
+                        finding.severity === 'medium' ? 'bg-amber-50 text-amber-500' : 'bg-indigo-50 text-indigo-500'
                       }`}>
-                        {finding.icon}
+                        {ICON_MAP[finding.iconKey] || <AlertCircle className="w-4 h-4" />}
                       </div>
                       <div>
                         <h3 className="font-bold text-slate-900 mb-1">{finding.title}</h3>
@@ -341,7 +367,7 @@ export default function App() {
                     <CheckCircle2 className="w-6 h-6 text-emerald-500" />
                     <div>
                       <h3 className="font-bold text-emerald-900">No red flags detected</h3>
-                      <p className="text-sm text-emerald-700">The headline doesn't contain obvious linguistic markers of fake news.</p>
+                      <p className="text-sm text-emerald-700">The AI didn't find any obvious linguistic or logical markers of fake news.</p>
                     </div>
                   </div>
                 )}
@@ -351,7 +377,7 @@ export default function App() {
               <div className="bg-slate-100 p-4 rounded-xl flex items-start gap-3">
                 <Info className="w-5 h-5 text-slate-400 mt-0.5 flex-shrink-0" />
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  <strong>Note:</strong> This tool uses linguistic analysis to detect patterns common in misinformation. It does not fact-check the actual content or verify the truthfulness of the claims. Always verify news from multiple reputable sources.
+                  <strong>Note:</strong> This tool uses Gemini AI to analyze linguistic and logical patterns. While more advanced than simple keyword matching, it is not a definitive fact-checker. AI can make mistakes. Always verify news from multiple reputable sources.
                 </p>
               </div>
             </motion.div>
@@ -360,7 +386,7 @@ export default function App() {
 
         {/* Footer */}
         <footer className="mt-16 pt-8 border-t border-slate-200 text-center text-slate-400 text-sm">
-          <p>© 2026 Fake News Probability Checker • Built for Media Literacy</p>
+          <p>© 2026 Fake News Probability Checker • Enhanced with Gemini AI</p>
         </footer>
       </div>
     </div>
