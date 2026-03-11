@@ -1,0 +1,5 @@
+{
+  "name": "Fake News Probability Checker",
+  "description": "An AI-powered tool that analyzes news headlines for signs of misinformation, clickbait, and emotional manipulation.",
+  "requestFramePermissions": []
+}
